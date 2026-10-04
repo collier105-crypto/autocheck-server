@@ -6,11 +6,15 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
+/* =========================
+   AUTOCHECK+ SERVER V34
+   ========================= */
+
 app.get("/", (_, res) => {
   res.json({
     ok: true,
     app: "AutoCheck+",
-    version: "V31"
+    version: "V34"
   });
 });
 
@@ -18,7 +22,7 @@ app.get("/health", (_, res) => {
   res.json({
     ok: true,
     status: "online",
-    version: "V31"
+    version: "V34"
   });
 });
 
@@ -34,16 +38,12 @@ function hostOf(u) {
 
 function sourceName(h) {
   if (h.includes("autoscout24")) return "AutoScout24";
-
   if (h.includes("2ememain") || h.includes("2dehands"))
     return "2ememain";
-
   if (h.includes("facebook"))
     return "Facebook Marketplace";
-
   if (h.includes("leboncoin"))
     return "Leboncoin";
-
   if (h.includes("gocar"))
     return "Gocar";
 
@@ -57,9 +57,7 @@ function cleanText(s) {
 }
 
 function numberFrom(v) {
-
-  if (v == null)
-    return null;
+  if (v == null) return null;
 
   const n = Number(
     String(v).replace(/[^\d]/g, "")
@@ -70,8 +68,11 @@ function numberFrom(v) {
     : null;
 }
 
-function jsonLd(html) {
+/* =========================
+   JSON-LD
+   ========================= */
 
+function jsonLd(html) {
   const blocks = [
     ...html.matchAll(
       /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
@@ -79,9 +80,7 @@ function jsonLd(html) {
   ];
 
   for (const b of blocks) {
-
     try {
-
       const x = JSON.parse(b[1]);
 
       const arr = Array.isArray(x)
@@ -89,7 +88,6 @@ function jsonLd(html) {
         : [x];
 
       for (const o of arr) {
-
         if (
           o &&
           typeof o === "object" &&
@@ -103,15 +101,17 @@ function jsonLd(html) {
           return o;
         }
       }
-
     } catch {}
   }
 
   return null;
 }
 
-function meta(html, key) {
+/* =========================
+   META TAG
+   ========================= */
 
+function meta(html, key) {
   const esc = key.replace(
     /[.*+?^${}()|[\]\\]/g,
     "\\$&"
@@ -134,8 +134,11 @@ function meta(html, key) {
   )[1] || "";
 }
 
-function normalize(ld, html) {
+/* =========================
+   NORMALISATION ANNONCE
+   ========================= */
 
+function normalize(ld, html) {
   const offers = ld?.offers || {};
 
   const brand =
@@ -145,7 +148,7 @@ function normalize(ld, html) {
 
   const model =
     ld?.model ||
-    ld?.vehicleModelDate ||
+    ld?.vehicleConfiguration ||
     "";
 
   const name =
@@ -158,14 +161,17 @@ function normalize(ld, html) {
     meta(html, "og:description") ||
     "";
 
-  const blob = cleanText(
-    `${name} ${desc}`
-  );
+  const blob =
+    cleanText(`${name} ${desc}`);
 
   const year =
     numberFrom(ld?.vehicleModelDate) ||
     numberFrom(
-      (blob.match(/\b(19|20)\d{2}\b/) || [])[0]
+      (
+        blob.match(
+          /\b(?:19|20)\d{2}\b/
+        ) || []
+      )[0]
     );
 
   const km =
@@ -193,7 +199,6 @@ function normalize(ld, html) {
     );
 
   return {
-
     model:
       cleanText(
         [brand, model]
@@ -202,11 +207,9 @@ function normalize(ld, html) {
       ) ||
       cleanText(name),
 
-    year: year,
-
-    km: km,
-
-    price: price,
+    year,
+    km,
+    price,
 
     fuel:
       cleanText(
@@ -227,16 +230,18 @@ function normalize(ld, html) {
   };
 }
 
+/* =========================
+   ANALYSE D'UNE ANNONCE
+   ========================= */
+
 app.post(
   "/api/analyse",
 
   async (req, res) => {
-
     const url =
       req.body?.url?.trim();
 
     if (!url) {
-
       return res
         .status(400)
         .json({
@@ -249,12 +254,8 @@ app.post(
     let parsed;
 
     try {
-
-      parsed =
-        new URL(url);
-
+      parsed = new URL(url);
     } catch {
-
       return res
         .status(400)
         .json({
@@ -265,12 +266,9 @@ app.post(
     }
 
     if (
-      ![
-        "http:",
-        "https:"
-      ].includes(parsed.protocol)
+      !["http:", "https:"]
+        .includes(parsed.protocol)
     ) {
-
       return res
         .status(400)
         .json({
@@ -284,7 +282,6 @@ app.post(
       hostOf(url);
 
     try {
-
       const controller =
         new AbortController();
 
@@ -303,9 +300,8 @@ app.post(
               controller.signal,
 
             headers: {
-
               "user-agent":
-                "Mozilla/5.0 (compatible; AutoCheckPlus/31; +vehicle-analysis)",
+                "Mozilla/5.0 (compatible; AutoCheckPlus/34)",
 
               "accept-language":
                 "fr-BE,fr;q=0.9,en;q=0.7"
@@ -328,10 +324,7 @@ app.post(
         jsonLd(html);
 
       const data =
-        normalize(
-          ld,
-          html
-        );
+        normalize(ld, html);
 
       const extracted =
         !!(
@@ -342,10 +335,10 @@ app.post(
         );
 
       return res.json({
-
         ok: true,
 
-        version: "V31",
+        version:
+          "V34",
 
         source:
           sourceName(host),
@@ -372,16 +365,15 @@ app.post(
         message:
           extracted
             ? "Données publiques récupérées."
-            : "La page répond mais aucune donnée structurée exploitable n'a été trouvée."
+            : "Aucune donnée structurée exploitable."
       });
 
     } catch (e) {
-
       return res.json({
-
         ok: true,
 
-        version: "V31",
+        version:
+          "V34",
 
         source:
           sourceName(host),
@@ -393,20 +385,11 @@ app.post(
           url,
 
         model: "",
-
-        year:
-          null,
-
-        km:
-          null,
-
-        price:
-          null,
-
+        year: null,
+        km: null,
+        price: null,
         fuel: "",
-
         power: "",
-
         gearbox: "",
 
         market_value:
@@ -425,6 +408,91 @@ app.post(
   }
 );
 
+/* =========================
+   COMPARABLES V34
+   ========================= */
+
+app.post(
+  "/api/comparables",
+
+  async (req, res) => {
+    const {
+      url,
+      model,
+      year,
+      km,
+      price,
+      limit
+    } = req.body || {};
+
+    if (!url && !model) {
+      return res
+        .status(400)
+        .json({
+          ok: false,
+          error:
+            "Véhicule ou annonce manquante."
+        });
+    }
+
+    const maxResults =
+      Math.min(
+        Math.max(
+          Number(limit) || 10,
+          1
+        ),
+        10
+      );
+
+    /*
+      V34 prépare la recherche automatique.
+
+      IMPORTANT :
+      on ne fabrique pas de fausses annonces.
+
+      Une source de recherche réelle devra être
+      branchée ici dans la prochaine évolution.
+    */
+
+    return res.json({
+      ok: true,
+
+      version:
+        "V34",
+
+      vehicle: {
+        model:
+          cleanText(model),
+        year:
+          numberFrom(year),
+        km:
+          numberFrom(km),
+        price:
+          numberFrom(price)
+      },
+
+      requested_results:
+        maxResults,
+
+      comparables:
+        [],
+
+      market_value:
+        null,
+
+      search_status:
+        "search_provider_required",
+
+      message:
+        "Serveur V34 opérationnel. Le moteur de recherche de comparables doit maintenant être connecté à une source d'annonces réelle."
+    });
+  }
+);
+
+/* =========================
+   SERVEUR
+   ========================= */
+
 const PORT =
   process.env.PORT ||
   3000;
@@ -432,10 +500,10 @@ const PORT =
 app.listen(
   PORT,
   "0.0.0.0",
-  () => {
 
+  () => {
     console.log(
-      `AutoCheck+ V31 server ready on ${PORT}`
+      `AutoCheck+ V34 server ready on ${PORT}`
     );
   }
 );
