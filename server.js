@@ -6,11 +6,11 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
-const VERSION = "V37";
+const VERSION = "V38";
 
-/* =========================
-   AUTOCHECK+ SERVER V37
-   ========================= */
+/* =========================================================
+   AUTOCHECK+ SERVER V38
+   ========================================================= */
 
 app.get("/", (_, res) => {
   res.json({
@@ -28,9 +28,9 @@ app.get("/health", (_, res) => {
   });
 });
 
-/* =========================
+/* =========================================================
    OUTILS
-   ========================= */
+   ========================================================= */
 
 function cleanText(s) {
   return String(s || "")
@@ -38,6 +38,8 @@ function cleanText(s) {
     .replace(/&amp;/gi, "&")
     .replace(/&#39;/g, "'")
     .replace(/&quot;/gi, '"')
+    .replace(/&euro;/gi, "€")
+    .replace(/&#x20;/gi, " ")
     .replace(/<[^>]*>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -46,13 +48,16 @@ function cleanText(s) {
 function numberFrom(v) {
   if (v == null) return null;
 
-  const digits = String(v).replace(/[^\d]/g, "");
+  const digits =
+    String(v).replace(/[^\d]/g, "");
 
   if (!digits) return null;
 
   const n = Number(digits);
 
-  return Number.isFinite(n) ? n : null;
+  return Number.isFinite(n)
+    ? n
+    : null;
 }
 
 function hostOf(u) {
@@ -66,48 +71,62 @@ function hostOf(u) {
   }
 }
 
-function sourceName(h) {
+function sourceName(host) {
   if (
-    h.includes("2ememain") ||
-    h.includes("2dehands")
+    host.includes("2ememain") ||
+    host.includes("2dehands")
   ) {
     return "2ememain";
   }
 
-  if (h.includes("autoscout24"))
+  if (host.includes("autoscout24"))
     return "AutoScout24";
 
-  if (h.includes("facebook"))
+  if (host.includes("facebook"))
     return "Facebook Marketplace";
 
-  if (h.includes("leboncoin"))
+  if (host.includes("leboncoin"))
     return "Leboncoin";
 
-  if (h.includes("gocar"))
+  if (host.includes("gocar"))
     return "Gocar";
 
-  return h || "Inconnue";
+  return host || "Inconnue";
 }
 
-/* =========================
+function normalizeWords(text) {
+  return cleanText(text)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(word => word.length >= 2);
+}
+
+/* =========================================================
    META
-   ========================= */
+   ========================================================= */
 
 function meta(html, key) {
-  const escaped = key.replace(
-    /[.*+?^${}()|[\]\\]/g,
-    "\\$&"
-  );
+  const escaped =
+    key.replace(
+      /[.*+?^${}()|[\]\\]/g,
+      "\\$&"
+    );
 
-  const r1 = new RegExp(
-    `<meta[^>]+(?:property|name)=["']${escaped}["'][^>]+content=["']([^"']+)["']`,
-    "i"
-  );
+  const r1 =
+    new RegExp(
+      `<meta[^>]+(?:property|name)=["']${escaped}["'][^>]+content=["']([^"']+)["']`,
+      "i"
+    );
 
-  const r2 = new RegExp(
-    `<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${escaped}["']`,
-    "i"
-  );
+  const r2 =
+    new RegExp(
+      `<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${escaped}["']`,
+      "i"
+    );
 
   return (
     html.match(r1) ||
@@ -116,56 +135,59 @@ function meta(html, key) {
   )[1] || "";
 }
 
-/* =========================
+/* =========================================================
    JSON-LD
-   ========================= */
+   ========================================================= */
 
 function findVehicleJsonLd(html) {
   const blocks = [
-    ...html.matchAll(
+    ...String(html || "").matchAll(
       /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
     )
   ];
 
+  function inspect(obj) {
+    if (!obj || typeof obj !== "object")
+      return null;
+
+    if (
+      obj.brand ||
+      obj.model ||
+      obj.vehicleConfiguration ||
+      obj.mileageFromOdometer ||
+      obj.offers
+    ) {
+      return obj;
+    }
+
+    if (Array.isArray(obj["@graph"])) {
+      for (const item of obj["@graph"]) {
+        const found = inspect(item);
+
+        if (found)
+          return found;
+      }
+    }
+
+    return null;
+  }
+
   for (const block of blocks) {
     try {
-      const parsed = JSON.parse(block[1]);
-
-      const inspect = obj => {
-        if (!obj || typeof obj !== "object")
-          return null;
-
-        if (
-          obj.brand ||
-          obj.model ||
-          obj.vehicleConfiguration ||
-          obj.mileageFromOdometer ||
-          obj.offers
-        ) {
-          return obj;
-        }
-
-        if (Array.isArray(obj["@graph"])) {
-          for (const x of obj["@graph"]) {
-            const found = inspect(x);
-
-            if (found)
-              return found;
-          }
-        }
-
-        return null;
-      };
+      const parsed =
+        JSON.parse(block[1]);
 
       if (Array.isArray(parsed)) {
-        for (const x of parsed) {
-          const found = inspect(x);
+        for (const item of parsed) {
+          const found =
+            inspect(item);
 
           if (found)
             return found;
         }
       } else {
-        const found = inspect(parsed);
+        const found =
+          inspect(parsed);
 
         if (found)
           return found;
@@ -176,16 +198,17 @@ function findVehicleJsonLd(html) {
   return null;
 }
 
-/* =========================
+/* =========================================================
    NORMALISATION VEHICULE
-   ========================= */
+   ========================================================= */
 
 function normalizeVehicle(ld, html) {
   ld = ld || {};
 
-  const offers = Array.isArray(ld.offers)
-    ? ld.offers[0] || {}
-    : ld.offers || {};
+  const offers =
+    Array.isArray(ld.offers)
+      ? ld.offers[0] || {}
+      : ld.offers || {};
 
   const brand =
     typeof ld.brand === "object"
@@ -202,9 +225,10 @@ function normalizeVehicle(ld, html) {
     meta(html, "og:description") ||
     "";
 
-  const blob = cleanText(
-    `${title} ${description}`
-  );
+  const blob =
+    cleanText(
+      `${title} ${description}`
+    );
 
   const model =
     cleanText(
@@ -219,7 +243,9 @@ function normalizeVehicle(ld, html) {
     cleanText(title);
 
   const year =
-    numberFrom(ld.vehicleModelDate) ||
+    numberFrom(
+      ld.vehicleModelDate
+    ) ||
     numberFrom(
       (
         blob.match(
@@ -241,7 +267,9 @@ function normalizeVehicle(ld, html) {
     );
 
   const price =
-    numberFrom(offers.price) ||
+    numberFrom(
+      offers.price
+    ) ||
     numberFrom(
       (
         blob.match(
@@ -277,13 +305,13 @@ function normalizeVehicle(ld, html) {
   };
 }
 
-/* =========================
+/* =========================================================
    TELECHARGEMENT PAGE
-   ========================= */
+   ========================================================= */
 
 async function fetchPage(
   url,
-  timeout = 12000
+  timeout = 15000
 ) {
   const controller =
     new AbortController();
@@ -331,9 +359,9 @@ async function fetchPage(
   }
 }
 
-/* =========================
-   ANALYSE ANNONCE
-   ========================= */
+/* =========================================================
+   ANALYSE D'UNE ANNONCE
+   ========================================================= */
 
 app.post(
   "/api/analyse",
@@ -355,7 +383,8 @@ app.post(
     let parsed;
 
     try {
-      parsed = new URL(url);
+      parsed =
+        new URL(url);
     } catch {
       return res
         .status(400)
@@ -379,7 +408,8 @@ app.post(
         });
     }
 
-    const host = hostOf(url);
+    const host =
+      hostOf(url);
 
     try {
       const html =
@@ -476,17 +506,16 @@ app.post(
   }
 );
 
-/* =========================
-   RECHERCHE 2EMEMAIN
-   ========================= */
+/* =========================================================
+   CONSTRUCTION RECHERCHE 2EMEMAIN
+   ========================================================= */
 
 function make2ememainSearch(model) {
-  let query = cleanText(model);
-
-  query = query
-    .replace(/\b\d{4}\b/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  let query =
+    cleanText(model)
+      .replace(/\b\d{4}\b/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
 
   if (!query)
     return null;
@@ -499,9 +528,59 @@ function make2ememainSearch(model) {
   );
 }
 
-/* =========================
-   EXTRACTION 2EMEMAIN V37
-   ========================= */
+/* =========================================================
+   EXTRACTION DES LIENS 2EMEMAIN
+   ========================================================= */
+
+function extractLinks2ememain(html) {
+  const links = [];
+  const seen = new Set();
+
+  const regex =
+    /href=["']([^"']+)["']/gi;
+
+  let match;
+
+  while (
+    (match = regex.exec(html))
+  ) {
+    let href =
+      String(match[1] || "");
+
+    href = href
+      .replace(/&amp;/g, "&")
+      .replace(/\\u002F/g, "/")
+      .replace(/\\u0026/g, "&");
+
+    if (
+      !href.includes("/v/") &&
+      !href.includes("/a/")
+    ) {
+      continue;
+    }
+
+    try {
+      const full =
+        new URL(
+          href,
+          "https://www.2ememain.be"
+        ).href;
+
+      if (seen.has(full))
+        continue;
+
+      seen.add(full);
+      links.push(full);
+
+    } catch {}
+  }
+
+  return links;
+}
+
+/* =========================================================
+   EXTRACTION RAPIDE RESULTATS 2EMEMAIN
+   ========================================================= */
 
 function extract2ememain(
   html,
@@ -511,16 +590,17 @@ function extract2ememain(
   const results = [];
   const seen = new Set();
 
-  const text = String(html || "")
-    .replace(/\\u20ac/gi, "€")
-    .replace(/\\u002F/gi, "/")
-    .replace(/\\u0026/gi, "&")
-    .replace(/&euro;/gi, "€")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&#x20;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/\r|\n|\t/g, " ")
-    .replace(/\s+/g, " ");
+  const text =
+    String(html || "")
+      .replace(/\\u20ac/gi, "€")
+      .replace(/\\u002F/gi, "/")
+      .replace(/\\u0026/gi, "&")
+      .replace(/&euro;/gi, "€")
+      .replace(/&nbsp;/gi, " ")
+      .replace(/&#x20;/gi, " ")
+      .replace(/&amp;/gi, "&")
+      .replace(/\r|\n|\t/g, " ")
+      .replace(/\s+/g, " ");
 
   function addResult(
     title,
@@ -529,18 +609,24 @@ function extract2ememain(
     km,
     url = ""
   ) {
-    title = cleanText(title)
-      .replace(
-        /Sauvegarder dans Mes Favoris/gi,
-        ""
-      )
-      .replace(/Image:/gi, "")
-      .replace(/Détails/gi, "")
-      .trim();
+    title =
+      cleanText(title)
+        .replace(
+          /Sauvegarder dans Mes Favoris/gi,
+          ""
+        )
+        .replace(/Image:/gi, "")
+        .replace(/Détails/gi, "")
+        .trim();
 
-    price = numberFrom(price);
-    year = numberFrom(year);
-    km = numberFrom(km);
+    price =
+      numberFrom(price);
+
+    year =
+      numberFrom(year);
+
+    km =
+      numberFrom(km);
 
     if (
       !price ||
@@ -573,7 +659,9 @@ function extract2ememain(
     seen.add(key);
 
     results.push({
-      site: "2ememain",
+      site:
+        "2ememain",
+
       title,
       price,
       year,
@@ -583,18 +671,19 @@ function extract2ememain(
   }
 
   /*
-     METHODE 1
-     prix -> année -> km
+    FORMAT 1
+    PRIX -> ANNEE -> KM
   */
 
   const pattern1 =
-    /(.{8,300}?)€\s*([\d.\s]+)(?:,-)?.{0,300}?\b((?:19|20)\d{2})\b.{0,180}?([\d.\s]+)\s*km/gi;
+    /(.{8,350}?)€\s*([\d.\s]+)(?:,-)?.{0,400}?\b((?:19|20)\d{2})\b.{0,250}?([\d.\s]+)\s*km/gi;
 
   let match;
 
   while (
-    (match = pattern1.exec(text)) &&
-    results.length < 100
+    (match =
+      pattern1.exec(text)) &&
+    results.length < 200
   ) {
     addResult(
       match[1],
@@ -605,16 +694,17 @@ function extract2ememain(
   }
 
   /*
-     METHODE 2
-     année -> km -> prix
+    FORMAT 2
+    ANNEE -> KM -> PRIX
   */
 
   const pattern2 =
-    /(.{8,300}?)\b((?:19|20)\d{2})\b.{0,180}?([\d.\s]+)\s*km.{0,300}?€\s*([\d.\s]+)(?:,-)?/gi;
+    /(.{8,350}?)\b((?:19|20)\d{2})\b.{0,250}?([\d.\s]+)\s*km.{0,400}?€\s*([\d.\s]+)(?:,-)?/gi;
 
   while (
-    (match = pattern2.exec(text)) &&
-    results.length < 150
+    (match =
+      pattern2.exec(text)) &&
+    results.length < 250
   ) {
     addResult(
       match[1],
@@ -625,9 +715,8 @@ function extract2ememain(
   }
 
   /*
-     METHODE 3
-     Analyse des blocs contenant
-     prix + année + km
+    FORMAT 3
+    BLOCS
   */
 
   const blocks =
@@ -636,20 +725,10 @@ function extract2ememain(
     );
 
   for (const block of blocks) {
-    if (results.length >= 200)
+    if (
+      results.length >= 300
+    )
       break;
-
-    if (
-      !/\b(?:19|20)\d{2}\b/
-        .test(block)
-    )
-      continue;
-
-    if (
-      !/[\d.\s]+\s*km\b/i
-        .test(block)
-    )
-      continue;
 
     const p =
       block.match(
@@ -669,58 +748,126 @@ function extract2ememain(
     if (!p || !y || !k)
       continue;
 
-    const title =
-      block.substring(
-        0,
-        Math.min(
-          block.length,
-          250
-        )
-      );
-
     addResult(
-      title,
+      block.substring(0, 300),
       p[1],
       y[1],
       k[1]
     );
   }
 
-  /*
-     SCORE DE SIMILARITE
-  */
+  return rankComparables(
+    results,
+    target,
+    limit
+  );
+}
+
+/* =========================================================
+   EXTRACTION PAGE INDIVIDUELLE
+   ========================================================= */
+
+function comparableFromPage(
+  html,
+  url
+) {
+  const ld =
+    findVehicleJsonLd(html);
+
+  const data =
+    normalizeVehicle(
+      ld,
+      html
+    );
+
+  if (
+    !data.price ||
+    !data.year ||
+    !data.km
+  ) {
+    return null;
+  }
+
+  return {
+    site:
+      "2ememain",
+
+    title:
+      data.model ||
+      cleanText(
+        meta(html, "og:title")
+      ),
+
+    model:
+      data.model,
+
+    price:
+      data.price,
+
+    year:
+      data.year,
+
+    km:
+      data.km,
+
+    fuel:
+      data.fuel,
+
+    gearbox:
+      data.gearbox,
+
+    url
+  };
+}
+
+/* =========================================================
+   CLASSEMENT DES COMPARABLES
+   ========================================================= */
+
+function rankComparables(
+  items,
+  target,
+  limit
+) {
+  const seen =
+    new Set();
+
+  const unique = [];
+
+  for (const item of items) {
+    if (
+      !item ||
+      !item.price ||
+      !item.year ||
+      !item.km
+    ) {
+      continue;
+    }
+
+    const key =
+      item.url ||
+      `${item.price}-${item.year}-${item.km}`;
+
+    if (seen.has(key))
+      continue;
+
+    seen.add(key);
+
+    unique.push({
+      ...item
+    });
+  }
 
   const targetWords =
-    cleanText(target.model)
-      .toLowerCase()
-      .split(/\s+/)
-      .filter(
-        word =>
-          word.length >= 3
+    normalizeWords(
+      target.model
+    );
+
+  for (const item of unique) {
+    const itemText =
+      normalizeWords(
+        `${item.title || ""} ${item.model || ""}`
       );
-
-  results.forEach(item => {
-    let score = 0;
-
-    if (target.year) {
-      score +=
-        Math.abs(
-          item.year -
-          target.year
-        ) *
-        20000;
-    }
-
-    if (target.km) {
-      score +=
-        Math.abs(
-          item.km -
-          target.km
-        );
-    }
-
-    const title =
-      item.title.toLowerCase();
 
     let matchingWords = 0;
 
@@ -728,46 +875,84 @@ function extract2ememain(
       const word of targetWords
     ) {
       if (
-        title.includes(word)
+        itemText.includes(word)
       ) {
         matchingWords++;
       }
     }
 
+    const yearDifference =
+      target.year
+        ? Math.abs(
+            item.year -
+            target.year
+          )
+        : 0;
+
+    const kmDifference =
+      target.km
+        ? Math.abs(
+            item.km -
+            target.km
+          )
+        : 0;
+
+    let score = 0;
+
+    score +=
+      yearDifference *
+      25000;
+
+    score +=
+      kmDifference;
+
     score -=
       matchingWords *
-      100000;
-
-    item._score =
-      score;
+      150000;
 
     item._matchingWords =
       matchingWords;
-  });
 
-  /*
-     PRIVILEGIER LE MEME MODELE
-  */
-
-  let candidates = results;
-
-  const modelMatches =
-    results.filter(
-      item =>
-        item._matchingWords > 0
-    );
-
-  if (
-    modelMatches.length >= 2
-  ) {
-    candidates =
-      modelMatches;
+    item._score =
+      score;
   }
 
   /*
-     FILTRAGE V37
-     année +/- 6 ans
-     kilométrage marge élargie
+    D'abord : même modèle
+  */
+
+  let candidates =
+    unique.filter(
+      item =>
+        item._matchingWords >=
+        Math.min(
+          2,
+          targetWords.length
+        )
+    );
+
+  /*
+    Si trop peu de résultats,
+    filtre moins strict
+  */
+
+  if (
+    candidates.length < 3
+  ) {
+    candidates =
+      unique.filter(
+        item =>
+          item._matchingWords >= 1
+      );
+  }
+
+  if (!candidates.length) {
+    candidates =
+      unique;
+  }
+
+  /*
+    Proximité année/km
   */
 
   let filtered =
@@ -777,9 +962,10 @@ function extract2ememain(
         Math.abs(
           item.year -
           target.year
-        ) > 6
-      )
+        ) > 7
+      ) {
         return false;
+      }
 
       if (
         target.km &&
@@ -788,11 +974,12 @@ function extract2ememain(
           target.km
         ) >
           Math.max(
-            150000,
-            target.km * 0.90
+            170000,
+            target.km * 1.0
           )
-      )
+      ) {
         return false;
+      }
 
       return true;
     });
@@ -818,58 +1005,183 @@ function extract2ememain(
     });
 }
 
-/* =========================
+/* =========================================================
    MEDIANE
-   ========================= */
+   ========================================================= */
 
 function median(values) {
-  const a = values
-    .filter(Boolean)
-    .sort(
-      (x, y) => x - y
-    );
+  const numbers =
+    values
+      .filter(
+        n =>
+          Number.isFinite(n) &&
+          n > 0
+      )
+      .sort(
+        (a, b) => a - b
+      );
 
-  if (!a.length)
+  if (!numbers.length)
     return null;
 
   const middle =
     Math.floor(
-      a.length / 2
+      numbers.length / 2
     );
 
-  return a.length % 2
-    ? a[middle]
-    : Math.round(
-        (
-          a[middle - 1] +
-          a[middle]
-        ) / 2
-      );
-}
-
-/* =========================
-   MOYENNE
-   ========================= */
-
-function average(values) {
-  const a =
-    values.filter(Boolean);
-
-  if (!a.length)
-    return null;
+  if (
+    numbers.length % 2
+  ) {
+    return numbers[middle];
+  }
 
   return Math.round(
-    a.reduce(
-      (sum, n) =>
-        sum + n,
-      0
-    ) / a.length
+    (
+      numbers[middle - 1] +
+      numbers[middle]
+    ) / 2
   );
 }
 
-/* =========================
-   COMPARABLES V37
-   ========================= */
+/* =========================================================
+   MOYENNE
+   ========================================================= */
+
+function average(values) {
+  const numbers =
+    values.filter(
+      n =>
+        Number.isFinite(n) &&
+        n > 0
+    );
+
+  if (!numbers.length)
+    return null;
+
+  return Math.round(
+    numbers.reduce(
+      (sum, n) =>
+        sum + n,
+      0
+    ) /
+      numbers.length
+  );
+}
+
+/* =========================================================
+   RECHERCHE DETAILLEE V38
+   ========================================================= */
+
+async function search2ememain(
+  target,
+  limit
+) {
+  const searchUrl =
+    make2ememainSearch(
+      target.model
+    );
+
+  if (!searchUrl) {
+    return {
+      searchUrl: null,
+      comparables: []
+    };
+  }
+
+  const html =
+    await fetchPage(
+      searchUrl
+    );
+
+  /*
+    Première méthode :
+    extraction directe de la page de recherche.
+  */
+
+  let comparables =
+    extract2ememain(
+      html,
+      target,
+      Math.max(limit, 10)
+    );
+
+  /*
+    V38 :
+    on récupère également les liens
+    d'annonces présents dans la page.
+  */
+
+  const links =
+    extractLinks2ememain(
+      html
+    );
+
+  const detailed = [];
+
+  /*
+    Limite volontaire :
+    on ne télécharge pas des dizaines
+    de pages inutilement.
+  */
+
+  const linksToCheck =
+    links.slice(0, 15);
+
+  for (
+    const link of linksToCheck
+  ) {
+    try {
+      const detailHtml =
+        await fetchPage(
+          link,
+          10000
+        );
+
+      const vehicle =
+        comparableFromPage(
+          detailHtml,
+          link
+        );
+
+      if (vehicle) {
+        detailed.push(
+          vehicle
+        );
+      }
+
+    } catch {
+      /*
+        Une annonce bloquée ne doit
+        pas interrompre toute la recherche.
+      */
+    }
+  }
+
+  /*
+    Fusion des deux méthodes.
+  */
+
+  const merged = [
+    ...detailed,
+    ...comparables
+  ];
+
+  comparables =
+    rankComparables(
+      merged,
+      target,
+      limit
+    );
+
+  return {
+    searchUrl,
+    comparables
+  };
+}
+
+/* =========================================================
+   API COMPARABLES V38
+   ========================================================= */
 
 app.post(
   "/api/comparables",
@@ -889,7 +1201,6 @@ app.post(
         .status(400)
         .json({
           ok: false,
-
           error:
             "Le modèle est nécessaire pour rechercher les comparables."
         });
@@ -918,41 +1229,25 @@ app.post(
         numberFrom(price)
     };
 
-    const searchUrl =
-      make2ememainSearch(
-        target.model
-      );
-
-    if (!searchUrl) {
-      return res
-        .status(400)
-        .json({
-          ok: false,
-
-          error:
-            "Recherche impossible."
-        });
-    }
-
     try {
-      const html =
-        await fetchPage(
-          searchUrl
-        );
-
-      const comparables =
-        extract2ememain(
-          html,
+      const result =
+        await search2ememain(
           target,
           maxResults
         );
 
-      const prices =
-        comparables.map(
-          x => x.price
-        );
+      const comparables =
+        result.comparables;
 
-      const marketValue =
+      const prices =
+        comparables
+          .map(
+            item =>
+              item.price
+          )
+          .filter(Boolean);
+
+      const medianValue =
         median(prices);
 
       const averageValue =
@@ -971,7 +1266,7 @@ app.post(
           "2ememain",
 
         search_url:
-          searchUrl,
+          result.searchUrl,
 
         requested_results:
           maxResults,
@@ -982,13 +1277,20 @@ app.post(
         comparables,
 
         market_value:
-          marketValue,
+          medianValue,
 
         median_value:
-          marketValue,
+          medianValue,
 
         average_value:
           averageValue,
+
+        confidence:
+          comparables.length >= 5
+            ? "good"
+            : comparables.length >= 3
+              ? "medium"
+              : "low",
 
         search_status:
           comparables.length
@@ -997,8 +1299,8 @@ app.post(
 
         message:
           comparables.length
-            ? `${comparables.length} comparable(s) réel(s) trouvé(s) sur 2ememain.`
-            : "2ememain a répondu, mais aucun comparable exploitable n'a été extrait."
+            ? `${comparables.length} comparable(s) trouvé(s) sur 2ememain.`
+            : "2ememain a répondu mais aucun comparable exploitable n'a été trouvé."
       });
 
     } catch (e) {
@@ -1013,9 +1315,6 @@ app.post(
 
         provider:
           "2ememain",
-
-        search_url:
-          searchUrl,
 
         requested_results:
           maxResults,
@@ -1035,6 +1334,9 @@ app.post(
         average_value:
           null,
 
+        confidence:
+          "none",
+
         search_status:
           "provider_unavailable",
 
@@ -1045,9 +1347,9 @@ app.post(
   }
 );
 
-/* =========================
+/* =========================================================
    SERVEUR
-   ========================= */
+   ========================================================= */
 
 const PORT =
   process.env.PORT ||
