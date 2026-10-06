@@ -5,7 +5,7 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
-const VERSION = "V42";
+const VERSION = "V44";
 
 /* =========================================================
    AUTOCHECK+ SERVER V42
@@ -159,8 +159,33 @@ function normalizeVehicle(ld, html) {
     price,
     fuel: cleanText(ld.fuelType || ""),
     power: cleanText(ld.vehicleEngine?.enginePower?.value || ""),
-    gearbox: cleanText(ld.vehicleTransmission || "")
+    gearbox: cleanText(ld.vehicleTransmission || ""),
+    title: cleanText(title),
+    description: cleanText(description)
   };
+}
+
+/* V44 : détection indicative de défauts dans le texte public de l'annonce.
+   Les montants sont des réserves estimatives, pas des devis. */
+function detectDefects(text) {
+  const t = cleanText(text || "").toLowerCase();
+  const rules = [
+    { re: /(vliegwiel|volant moteur|dual mass|bi[- ]?masse)/i, label: "Volant moteur", min: 800, max: 1500 },
+    { re: /(koppeling|embrayage|clutch)/i, label: "Embrayage", min: 650, max: 1200 },
+    { re: /(turbo).*(defect|kapot|bruit|noise|probleem|probl[eè]me|hs)|(?:defect|kapot|hs).*(turbo)/i, label: "Turbo à contrôler", min: 700, max: 1500 },
+    { re: /(roetfilter|fap|dpf).*(defect|verstopt|bouch|probleem|probl[eè]me|hs)|(?:defect|verstopt|bouch|hs).*(roetfilter|fap|dpf)/i, label: "FAP/DPF à contrôler", min: 400, max: 1400 },
+    { re: /(distributie|distribution).*(te doen|à faire|vervangen|remplacer|urgent)/i, label: "Distribution", min: 500, max: 900 },
+    { re: /(carrosserieschade|schade carrosserie|d[eé]g[aâ]ts? carrosserie|carrosserie.*endommag)/i, label: "Dégâts carrosserie", min: 300, max: 1200 },
+    { re: /(dakhemel.*los|hemelbekleding.*los|ciel de toit.*d[eé]coll)/i, label: "Ciel de toit", min: 150, max: 400 },
+    { re: /(motor.*maakt geluid|moteur.*bruit|engine.*noise)/i, label: "Bruit moteur à diagnostiquer", min: 300, max: 1500 }
+  ];
+  const found = [];
+  for (const r of rules) {
+    if (r.re.test(t) && !found.some(x => x.label === r.label)) {
+      found.push({ label: r.label, min: r.min, max: r.max, estimate: Math.round((r.min + r.max) / 2 / 50) * 50 });
+    }
+  }
+  return found;
 }
 
 async function fetchPage(url, timeout = 15000) {
@@ -214,6 +239,8 @@ app.post("/api/analyse", async (req, res) => {
     const html = await fetchPage(url);
     const ld = findVehicleJsonLd(html);
     const data = normalizeVehicle(ld, html);
+    const defects = detectDefects(`${data.title || ""} ${data.description || ""}`);
+    const repair_estimate = defects.reduce((sum, x) => sum + (x.estimate || 0), 0);
     const extracted = !!(data.model || data.year || data.km || data.price);
 
     return res.json({
@@ -223,6 +250,8 @@ app.post("/api/analyse", async (req, res) => {
       source_host: host,
       source_url: url,
       ...data,
+      defects,
+      repair_estimate,
       market_value: null,
       comparables: [],
       extraction_status: extracted ? "extracted" : "no_public_data",
