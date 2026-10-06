@@ -5,10 +5,10 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
-const VERSION = "V44";
+const VERSION = "V51";
 
 /* =========================================================
-   AUTOCHECK+ SERVER V42
+   AUTOCHECK+ SERVER V51
    ========================================================= */
 
 app.get("/", (_, res) => {
@@ -124,6 +124,22 @@ function findVehicleJsonLd(html) {
   return null;
 }
 
+
+function detectPowertrain(text) {
+  const t = cleanText(text || "").toLowerCase().replace(/[-_/]/g, " ");
+  let fuel = "";
+  if (/\b(diesel|tdi|hdi|dci|cdti|crdi|jtd|multijet)\b/i.test(t)) fuel = "Diesel";
+  else if (/\b(essence|benzine|petrol|tsi|tfsi|mpi|fsi)\b/i.test(t)) fuel = "Essence";
+
+  let engine = "";
+  const m = t.match(/\b([0-9][.,][0-9])\s*(?:l|litre|liter|tdi|tsi|tfsi|hdi|dci|cdti|crdi|jtd|diesel|essence|benzine)?\b/i);
+  if (m) {
+    const n = Number(m[1].replace(",", "."));
+    if (n >= 0.8 && n <= 8.0) engine = n.toFixed(1);
+  }
+  return { fuel, engine };
+}
+
 function normalizeVehicle(ld, html) {
   ld = ld || {};
   const offers = Array.isArray(ld.offers) ? ld.offers[0] || {} : ld.offers || {};
@@ -152,12 +168,14 @@ function normalizeVehicle(ld, html) {
         .find(Boolean)
     );
 
+  const detected = detectPowertrain(`${title} ${description}`);
   return {
     model,
     year,
     km,
     price,
-    fuel: cleanText(ld.fuelType || ""),
+    fuel: cleanText(ld.fuelType || detected.fuel || ""),
+    engine: detected.engine,
     power: cleanText(ld.vehicleEngine?.enginePower?.value || ""),
     gearbox: cleanText(ld.vehicleTransmission || ""),
     title: cleanText(title),
@@ -387,14 +405,18 @@ function comparableFromPage(html, url) {
 
   if (!data.price || !data.year || !data.km) return null;
 
+  const pt = detectPowertrain(`${data.title || ""} ${data.description || ""} ${url || ""}`);
   return {
     site: "2ememain",
-    title: data.model || cleanText(meta(html, "og:title")),
+    title: data.title || data.model || cleanText(meta(html, "og:title")),
     model: data.model,
+    description: data.description || "",
     price: data.price,
     year: data.year,
     km: data.km,
-    fuel: data.fuel,
+    fuel: data.fuel || pt.fuel,
+    engine: data.engine || pt.engine,
+    power: data.power || "",
     gearbox: data.gearbox,
     url
   };
@@ -428,7 +450,27 @@ function rankComparables(items, target, limit) {
     const yearDifference = target.year ? Math.abs(item.year - target.year) : 0;
     const kmDifference = target.km ? Math.abs(item.km - target.km) : 0;
 
+    const pt = detectPowertrain(`${item.title || ""} ${item.description || ""} ${item.url || ""} ${item.fuel || ""} ${item.engine || ""}`);
+    item.fuel = item.fuel || pt.fuel;
+    item.engine = item.engine || pt.engine;
+
+    const targetFuel = String(target.fuel || "").toLowerCase();
+    const itemFuel = String(item.fuel || "").toLowerCase();
+    const fuelMatch = !!(targetFuel && itemFuel && targetFuel === itemFuel);
+    const fuelConflict = !!(targetFuel && itemFuel && targetFuel !== itemFuel);
+    const engineMatch = !!(target.engine && item.engine && String(target.engine) === String(item.engine));
+    const engineConflict = !!(target.engine && item.engine && String(target.engine) !== String(item.engine));
+
     let score = yearDifference * 25000 + kmDifference - matchingWords * 150000;
+    if (fuelMatch) score -= 180000;
+    if (engineMatch) score -= 260000;
+    if (fuelConflict) score += 500000;
+    if (engineConflict) score += 650000;
+
+    item.powertrain_match =
+      fuelMatch && engineMatch ? "exact" :
+      (fuelMatch || engineMatch) && !fuelConflict && !engineConflict ? "partial" :
+      (fuelConflict || engineConflict) ? "conflict" : "unknown";
     item._matchingWords = matchingWords;
     item._score = score;
   }
@@ -453,6 +495,9 @@ function rankComparables(items, target, limit) {
   });
 
   if (!filtered.length) filtered = candidates;
+
+  const compatible = filtered.filter(item => item.powertrain_match !== "conflict");
+  if (compatible.length >= 3) filtered = compatible;
 
   filtered.sort((a, b) => a._score - b._score);
 
@@ -481,7 +526,7 @@ function average(values) {
 }
 
 /* =========================================================
-   RECHERCHE 2EMEMAIN V42
+   RECHERCHE 2EMEMAIN V51
    - jusqu'à 30 résultats renvoyés
    - jusqu'à 40 pages d'annonces individuelles vérifiées
    - concurrence limitée pour éviter un traitement trop long
@@ -543,11 +588,11 @@ async function search2ememain(target, limit) {
 }
 
 /* =========================================================
-   API COMPARABLES V42
+   API COMPARABLES V51
    ========================================================= */
 
 app.post("/api/comparables", async (req, res) => {
-  const { model, year, km, price, limit } = req.body || {};
+  const { model, year, km, price, limit, url, fuel, engine } = req.body || {};
 
   if (!model) {
     return res.status(400).json({
@@ -561,11 +606,14 @@ app.post("/api/comparables", async (req, res) => {
     30
   );
 
+  const targetPt = detectPowertrain(`${model || ""} ${url || ""} ${fuel || ""} ${engine || ""}`);
   const target = {
     model: cleanText(model),
     year: numberFrom(year),
     km: numberFrom(km),
-    price: numberFrom(price)
+    price: numberFrom(price),
+    fuel: cleanText(fuel || targetPt.fuel || ""),
+    engine: cleanText(engine || targetPt.engine || "")
   };
 
   try {
