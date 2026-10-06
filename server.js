@@ -5,7 +5,7 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
-const VERSION = "V51";
+const VERSION = "V54";
 
 /* =========================================================
    AUTOCHECK+ SERVER V51
@@ -299,9 +299,11 @@ app.post("/api/analyse", async (req, res) => {
   }
 });
 
-function make2ememainSearch(model) {
+function make2ememainSearch(model, target = {}) {
   let query = cleanText(model).replace(/\b\d{4}\b/g, "").replace(/\s+/g, " ").trim();
   if (!query) return null;
+  if (target.engine && !query.toLowerCase().includes(String(target.engine).toLowerCase())) query += ` ${target.engine}`;
+  if (String(target.fuel || "").toLowerCase().includes("diesel") && !/\b(tdi|diesel)\b/i.test(query)) query += " TDI";
   return (
     "https://www.2ememain.be/l/autos/q/" +
     encodeURIComponent(query).replace(/%20/g, "%2B") +
@@ -526,7 +528,7 @@ function average(values) {
 }
 
 /* =========================================================
-   RECHERCHE 2EMEMAIN V51
+   RECHERCHE MULTI-SITES V54
    - jusqu'à 30 résultats renvoyés
    - jusqu'à 40 pages d'annonces individuelles vérifiées
    - concurrence limitée pour éviter un traitement trop long
@@ -558,7 +560,7 @@ async function mapWithConcurrency(items, concurrency, fn) {
 }
 
 async function search2ememain(target, limit) {
-  const searchUrl = make2ememainSearch(target.model);
+  const searchUrl = make2ememainSearch(target.model, target);
   if (!searchUrl) return { searchUrl: null, comparables: [] };
 
   const html = await fetchPage(searchUrl);
@@ -587,8 +589,87 @@ async function search2ememain(target, limit) {
   return { searchUrl, comparables };
 }
 
+
+function slugifyPart(v) {
+  return cleanText(v || "").toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function makeAutoScoutSearch(target) {
+  const parts = cleanText(target.model).split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return null;
+  const make = slugifyPart(parts[0]);
+  const model = slugifyPart(parts.slice(1).join("-"));
+  let variant = "";
+  if (target.engine && String(target.fuel || "").toLowerCase().includes("diesel")) {
+    variant = `/ve_${String(target.engine).replace(".", "-")}-tdi`;
+  }
+  return `https://www.autoscout24.be/fr/lst/${make}/${model}${variant}`;
+}
+
+function extractLinksByHost(html, base, pathNeedle) {
+  const links=[],seen=new Set(),rx=/href=["']([^"']+)["']/gi;
+  let m;
+  while((m=rx.exec(String(html||"")))){
+    let href=String(m[1]||"").replace(/&amp;/g,"&").replace(/\\u002F/g,"/");
+    if(!href.includes(pathNeedle)) continue;
+    try{
+      const u=new URL(href,base).href;
+      if(!seen.has(u)){seen.add(u);links.push(u)}
+    }catch{}
+  }
+  return links;
+}
+
+function comparableFromGenericPage(html, url, site) {
+  const ld=findVehicleJsonLd(html);
+  const data=normalizeVehicle(ld,html);
+  if(!data.price || !data.year || !data.km) return null;
+  const pt=detectPowertrain(`${data.title||""} ${data.description||""} ${url||""}`);
+  return {
+    site,
+    title:data.title||data.model||cleanText(meta(html,"og:title")),
+    model:data.model,
+    description:data.description||"",
+    price:data.price, year:data.year, km:data.km,
+    fuel:data.fuel||pt.fuel, engine:data.engine||pt.engine,
+    power:data.power||"", gearbox:data.gearbox||"", url
+  };
+}
+
+async function searchAutoScout(target, limit) {
+  const searchUrl=makeAutoScoutSearch(target);
+  if(!searchUrl) return {searchUrl:null,comparables:[]};
+  const html=await fetchPage(searchUrl,15000);
+  const links=extractLinksByHost(html,"https://www.autoscout24.be","/offres/")
+    .concat(extractLinksByHost(html,"https://www.autoscout24.be","/aanbod/"));
+  const detailed=await mapWithConcurrency(links.slice(0,30),4,async link=>{
+    const h=await fetchPage(link,10000);
+    return comparableFromGenericPage(h,link,"AutoScout24");
+  });
+  return {searchUrl,comparables:rankComparables(detailed,target,limit)};
+}
+
+function makeGocarSearch(target){
+  const q=[target.model,target.engine,String(target.fuel||"").toLowerCase().includes("diesel")?"TDI":""]
+    .filter(Boolean).join(" ");
+  return `https://gocar.be/fr/voitures?search=${encodeURIComponent(q)}`;
+}
+
+async function searchGocar(target, limit){
+  const searchUrl=makeGocarSearch(target);
+  const html=await fetchPage(searchUrl,15000);
+  const links=extractLinksByHost(html,"https://gocar.be","/fr/voitures/");
+  const detailed=await mapWithConcurrency(links.slice(0,25),4,async link=>{
+    const h=await fetchPage(link,10000);
+    return comparableFromGenericPage(h,link,"Gocar");
+  });
+  return {searchUrl,comparables:rankComparables(detailed,target,limit)};
+}
+
 /* =========================================================
-   API COMPARABLES V51
+   API COMPARABLES V54
    ========================================================= */
 
 app.post("/api/comparables", async (req, res) => {
@@ -617,50 +698,55 @@ app.post("/api/comparables", async (req, res) => {
   };
 
   try {
-    const result = await search2ememain(target, maxResults);
-    const comparables = result.comparables;
-    const prices = comparables.map(item => item.price).filter(Boolean);
-    const medianValue = median(prices);
-    const averageValue = average(prices);
+    const settled = await Promise.allSettled([
+      search2ememain(target, maxResults),
+      searchAutoScout(target, maxResults),
+      searchGocar(target, maxResults)
+    ]);
+
+    const names=["2ememain","AutoScout24","Gocar"];
+    const providerStatus={};
+    let merged=[];
+    const searchUrls={};
+
+    settled.forEach((r,i)=>{
+      if(r.status==="fulfilled"){
+        providerStatus[names[i]]={ok:true,count:r.value.comparables.length};
+        searchUrls[names[i]]=r.value.searchUrl;
+        merged.push(...r.value.comparables);
+      }else{
+        providerStatus[names[i]]={ok:false,count:0,error:String(r.reason?.message||r.reason||"indisponible")};
+      }
+    });
+
+    const comparables=rankComparables(merged,target,maxResults);
+    const prices=comparables.map(item=>item.price).filter(Boolean);
+    const medianValue=median(prices), averageValue=average(prices);
 
     return res.json({
-      ok: true,
-      version: VERSION,
-      vehicle: target,
-      provider: "2ememain",
-      search_url: result.searchUrl,
-      requested_results: maxResults,
-      results_count: comparables.length,
+      ok:true, version:VERSION, vehicle:target,
+      provider:"multi-sites",
+      providers:providerStatus,
+      search_urls:searchUrls,
+      requested_results:maxResults,
+      results_count:comparables.length,
       comparables,
-      market_value: medianValue,
-      median_value: medianValue,
-      average_value: averageValue,
-      confidence:
-        comparables.length >= 5
-          ? "good"
-          : comparables.length >= 3
-            ? "medium"
-            : "low",
-      search_status: comparables.length ? "results_found" : "no_results",
-      message: comparables.length
-        ? `${comparables.length} comparable(s) trouvé(s) sur 2ememain.`
-        : "2ememain a répondu mais aucun comparable exploitable n'a été trouvé."
+      market_value:medianValue,
+      median_value:medianValue,
+      average_value:averageValue,
+      confidence:comparables.length>=5?"good":comparables.length>=3?"medium":"low",
+      search_status:comparables.length?"results_found":"no_results",
+      message:comparables.length
+        ? `${comparables.length} comparable(s) multi-sites trouvé(s).`
+        : "Aucun comparable exploitable trouvé sur les sources disponibles."
     });
   } catch (e) {
     return res.json({
-      ok: true,
-      version: VERSION,
-      vehicle: target,
-      provider: "2ememain",
-      requested_results: maxResults,
-      results_count: 0,
-      comparables: [],
-      market_value: null,
-      median_value: null,
-      average_value: null,
-      confidence: "none",
-      search_status: "provider_unavailable",
-      message: `Recherche 2ememain indisponible : ${e.message}`
+      ok:true, version:VERSION, vehicle:target, provider:"multi-sites",
+      requested_results:maxResults, results_count:0, comparables:[],
+      market_value:null, median_value:null, average_value:null,
+      confidence:"none", search_status:"provider_unavailable",
+      message:`Recherche multi-sites indisponible : ${e.message}`
     });
   }
 });
