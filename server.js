@@ -5,7 +5,7 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
-const VERSION = "V54";
+const VERSION = "V55";
 
 /* =========================================================
    AUTOCHECK+ SERVER V51
@@ -528,7 +528,7 @@ function average(values) {
 }
 
 /* =========================================================
-   RECHERCHE MULTI-SITES V54
+   RECHERCHE MULTI-SITES V55
    - jusqu'à 30 résultats renvoyés
    - jusqu'à 40 pages d'annonces individuelles vérifiées
    - concurrence limitée pour éviter un traitement trop long
@@ -559,36 +559,48 @@ async function mapWithConcurrency(items, concurrency, fn) {
   return results.filter(Boolean);
 }
 
-async function search2ememain(target, limit) {
-  const searchUrl = make2ememainSearch(target.model, target);
-  if (!searchUrl) return { searchUrl: null, comparables: [] };
-
-  const html = await fetchPage(searchUrl);
-
-  let comparables = extract2ememain(
-    html,
-    target,
-    Math.max(limit, 30)
-  );
-
-  const links = extractLinks2ememain(html);
-  const linksToCheck = links.slice(0, 40);
-
-  const detailed = await mapWithConcurrency(
-    linksToCheck,
-    5,
-    async link => {
-      const detailHtml = await fetchPage(link, 10000);
-      return comparableFromPage(detailHtml, link);
-    }
-  );
-
-  const merged = [...detailed, ...comparables];
-  comparables = rankComparables(merged, target, limit);
-
-  return { searchUrl, comparables };
+function targetQueries(target) {
+  const base=cleanText(target.model||"");
+  const e=cleanText(target.engine||"");
+  const diesel=String(target.fuel||"").toLowerCase().includes("diesel");
+  const y=target.year||"";
+  const qs=[
+    [base,e,diesel?"TDI":"",y].filter(Boolean).join(" "),
+    [base,e,diesel?"TDI":""].filter(Boolean).join(" "),
+    [base.replace(/\bVolkswagen\b/i,"").trim(),e,diesel?"TDI":"",y].filter(Boolean).join(" ")
+  ];
+  // Golf 6 / Golf VI aliases when the source URL/model exposes the generation.
+  const raw=`${base} ${target.source_url||""}`.toLowerCase();
+  if(/\bgolf[\s_-]*6\b/.test(raw) || /\bgolf[\s_-]*vi\b/.test(raw)){
+    qs.push(["Volkswagen Golf 6",e,diesel?"TDI":"",y].filter(Boolean).join(" "));
+    qs.push(["Volkswagen Golf VI",e,diesel?"TDI":""].filter(Boolean).join(" "));
+  }
+  return [...new Set(qs.map(cleanText).filter(Boolean))];
 }
 
+async function search2ememain(target, limit) {
+  const queries=targetQueries(target);
+  const pages=await mapWithConcurrency(queries,3,async q=>{
+    const searchUrl=make2ememainSearch(q,{});
+    const html=await fetchPage(searchUrl,15000);
+    return {q,searchUrl,html};
+  });
+  let merged=[], urls=[], links=[];
+  for(const p of pages){
+    urls.push(p.searchUrl);
+    merged.push(...extract2ememain(p.html,target,Math.max(limit,30)));
+    links.push(...extractLinks2ememain(p.html));
+  }
+  links=[...new Set(links)].slice(0,60);
+  const detailed=await mapWithConcurrency(links,5,async link=>{
+    const detailHtml=await fetchPage(link,10000);
+    const c=comparableFromPage(detailHtml,link);
+    if(c)c.site="2ememain";
+    return c;
+  });
+  merged.push(...detailed);
+  return {searchUrl:urls,comparables:rankComparables(merged,target,limit),queries};
+}
 
 function slugifyPart(v) {
   return cleanText(v || "").toLowerCase()
@@ -639,16 +651,18 @@ function comparableFromGenericPage(html, url, site) {
 }
 
 async function searchAutoScout(target, limit) {
-  const searchUrl=makeAutoScoutSearch(target);
-  if(!searchUrl) return {searchUrl:null,comparables:[]};
-  const html=await fetchPage(searchUrl,15000);
-  const links=extractLinksByHost(html,"https://www.autoscout24.be","/offres/")
-    .concat(extractLinksByHost(html,"https://www.autoscout24.be","/aanbod/"));
-  const detailed=await mapWithConcurrency(links.slice(0,30),4,async link=>{
+  const urls=[];
+  const direct=makeAutoScoutSearch(target); if(direct)urls.push(direct);
+  for(const q of targetQueries(target)) urls.push(`https://www.autoscout24.be/fr/lst?search=${encodeURIComponent(q)}`);
+  const pages=await mapWithConcurrency([...new Set(urls)],3,async searchUrl=>({searchUrl,html:await fetchPage(searchUrl,15000)}));
+  let links=[];
+  for(const p of pages) links.push(...extractLinksByHost(p.html,"https://www.autoscout24.be","/offres/"),...extractLinksByHost(p.html,"https://www.autoscout24.be","/aanbod/"));
+  links=[...new Set(links)].slice(0,50);
+  const detailed=await mapWithConcurrency(links,4,async link=>{
     const h=await fetchPage(link,10000);
     return comparableFromGenericPage(h,link,"AutoScout24");
   });
-  return {searchUrl,comparables:rankComparables(detailed,target,limit)};
+  return {searchUrl:pages.map(p=>p.searchUrl),comparables:rankComparables(detailed,target,limit),queries:targetQueries(target)};
 }
 
 function makeGocarSearch(target){
@@ -658,18 +672,20 @@ function makeGocarSearch(target){
 }
 
 async function searchGocar(target, limit){
-  const searchUrl=makeGocarSearch(target);
-  const html=await fetchPage(searchUrl,15000);
-  const links=extractLinksByHost(html,"https://gocar.be","/fr/voitures/");
-  const detailed=await mapWithConcurrency(links.slice(0,25),4,async link=>{
+  const urls=targetQueries(target).map(q=>`https://gocar.be/fr/voitures?search=${encodeURIComponent(q)}`);
+  const pages=await mapWithConcurrency([...new Set(urls)],3,async searchUrl=>({searchUrl,html:await fetchPage(searchUrl,15000)}));
+  let links=[];
+  for(const p of pages) links.push(...extractLinksByHost(p.html,"https://gocar.be","/fr/voitures/"));
+  links=[...new Set(links)].slice(0,40);
+  const detailed=await mapWithConcurrency(links,4,async link=>{
     const h=await fetchPage(link,10000);
     return comparableFromGenericPage(h,link,"Gocar");
   });
-  return {searchUrl,comparables:rankComparables(detailed,target,limit)};
+  return {searchUrl:pages.map(p=>p.searchUrl),comparables:rankComparables(detailed,target,limit),queries:targetQueries(target)};
 }
 
 /* =========================================================
-   API COMPARABLES V54
+   API COMPARABLES V55
    ========================================================= */
 
 app.post("/api/comparables", async (req, res) => {
@@ -694,7 +710,8 @@ app.post("/api/comparables", async (req, res) => {
     km: numberFrom(km),
     price: numberFrom(price),
     fuel: cleanText(fuel || targetPt.fuel || ""),
-    engine: cleanText(engine || targetPt.engine || "")
+    engine: cleanText(engine || targetPt.engine || ""),
+    source_url: cleanText(url || "")
   };
 
   try {
@@ -711,7 +728,7 @@ app.post("/api/comparables", async (req, res) => {
 
     settled.forEach((r,i)=>{
       if(r.status==="fulfilled"){
-        providerStatus[names[i]]={ok:true,count:r.value.comparables.length};
+        providerStatus[names[i]]={ok:true,count:r.value.comparables.length,queries:r.value.queries||[]};
         searchUrls[names[i]]=r.value.searchUrl;
         merged.push(...r.value.comparables);
       }else{
