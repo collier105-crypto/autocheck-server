@@ -5,7 +5,7 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
-const VERSION = "V55";
+const VERSION = "V56";
 
 /* =========================================================
    AUTOCHECK+ SERVER V51
@@ -579,10 +579,10 @@ function targetQueries(target) {
 }
 
 async function search2ememain(target, limit) {
-  const queries=targetQueries(target);
+  const queries=targetQueries(target).slice(0,2);
   const pages=await mapWithConcurrency(queries,3,async q=>{
     const searchUrl=make2ememainSearch(q,{});
-    const html=await fetchPage(searchUrl,15000);
+    const html=await fetchPage(searchUrl,5500);
     return {q,searchUrl,html};
   });
   let merged=[], urls=[], links=[];
@@ -591,9 +591,9 @@ async function search2ememain(target, limit) {
     merged.push(...extract2ememain(p.html,target,Math.max(limit,30)));
     links.push(...extractLinks2ememain(p.html));
   }
-  links=[...new Set(links)].slice(0,60);
+  links=[...new Set(links)].slice(0,10);
   const detailed=await mapWithConcurrency(links,5,async link=>{
-    const detailHtml=await fetchPage(link,10000);
+    const detailHtml=await fetchPage(link,4500);
     const c=comparableFromPage(detailHtml,link);
     if(c)c.site="2ememain";
     return c;
@@ -653,13 +653,13 @@ function comparableFromGenericPage(html, url, site) {
 async function searchAutoScout(target, limit) {
   const urls=[];
   const direct=makeAutoScoutSearch(target); if(direct)urls.push(direct);
-  for(const q of targetQueries(target)) urls.push(`https://www.autoscout24.be/fr/lst?search=${encodeURIComponent(q)}`);
-  const pages=await mapWithConcurrency([...new Set(urls)],3,async searchUrl=>({searchUrl,html:await fetchPage(searchUrl,15000)}));
+  for(const q of targetQueries(target).slice(0,1)) urls.push(`https://www.autoscout24.be/fr/lst?search=${encodeURIComponent(q)}`);
+  const pages=await mapWithConcurrency([...new Set(urls)],3,async searchUrl=>({searchUrl,html:await fetchPage(searchUrl,5500)}));
   let links=[];
   for(const p of pages) links.push(...extractLinksByHost(p.html,"https://www.autoscout24.be","/offres/"),...extractLinksByHost(p.html,"https://www.autoscout24.be","/aanbod/"));
-  links=[...new Set(links)].slice(0,50);
+  links=[...new Set(links)].slice(0,8);
   const detailed=await mapWithConcurrency(links,4,async link=>{
-    const h=await fetchPage(link,10000);
+    const h=await fetchPage(link,4500);
     return comparableFromGenericPage(h,link,"AutoScout24");
   });
   return {searchUrl:pages.map(p=>p.searchUrl),comparables:rankComparables(detailed,target,limit),queries:targetQueries(target)};
@@ -672,13 +672,13 @@ function makeGocarSearch(target){
 }
 
 async function searchGocar(target, limit){
-  const urls=targetQueries(target).map(q=>`https://gocar.be/fr/voitures?search=${encodeURIComponent(q)}`);
-  const pages=await mapWithConcurrency([...new Set(urls)],3,async searchUrl=>({searchUrl,html:await fetchPage(searchUrl,15000)}));
+  const urls=targetQueries(target).slice(0,2).map(q=>`https://gocar.be/fr/voitures?search=${encodeURIComponent(q)}`);
+  const pages=await mapWithConcurrency([...new Set(urls)],3,async searchUrl=>({searchUrl,html:await fetchPage(searchUrl,5500)}));
   let links=[];
   for(const p of pages) links.push(...extractLinksByHost(p.html,"https://gocar.be","/fr/voitures/"));
-  links=[...new Set(links)].slice(0,40);
+  links=[...new Set(links)].slice(0,8);
   const detailed=await mapWithConcurrency(links,4,async link=>{
-    const h=await fetchPage(link,10000);
+    const h=await fetchPage(link,4500);
     return comparableFromGenericPage(h,link,"Gocar");
   });
   return {searchUrl:pages.map(p=>p.searchUrl),comparables:rankComparables(detailed,target,limit),queries:targetQueries(target)};
