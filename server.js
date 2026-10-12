@@ -5,7 +5,7 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
-const VERSION = "V56";
+const VERSION = "V57";
 
 /* =========================================================
    AUTOCHECK+ SERVER V51
@@ -688,6 +688,20 @@ async function searchGocar(target, limit){
    API COMPARABLES V55
    ========================================================= */
 
+// V57: diagnostic rapide, sans solliciter les sites externes.
+app.get("/api/diagnostic", (req, res) => {
+  res.json({ok:true,version:VERSION,service:"online",comparables_route:"POST /api/comparables",time:new Date().toISOString()});
+});
+
+function timedProvider(name, work, ms = 18000) {
+  const started=Date.now();
+  console.log(`[comparables] ${name} START`);
+  return Promise.race([
+    Promise.resolve().then(work).then(value=>({status:"fulfilled",value})).catch(reason=>({status:"rejected",reason})),
+    new Promise(resolve=>setTimeout(()=>resolve({status:"rejected",reason:new Error(`Délai ${ms} ms dépassé`)}),ms))
+  ]).then(result=>{console.log(`[comparables] ${name} ${result.status} ${Date.now()-started}ms ${result.status==='rejected'?String(result.reason):''}`);return result;});
+}
+
 app.post("/api/comparables", async (req, res) => {
   const { model, year, km, price, limit, url, fuel, engine } = req.body || {};
 
@@ -715,10 +729,11 @@ app.post("/api/comparables", async (req, res) => {
   };
 
   try {
-    const settled = await Promise.allSettled([
-      search2ememain(target, maxResults),
-      searchAutoScout(target, maxResults),
-      searchGocar(target, maxResults)
+    console.log(`[comparables] REQUEST ${JSON.stringify({model:target.model,year:target.year,km:target.km})}`);
+    const settled = await Promise.all([
+      timedProvider("2ememain",()=>search2ememain(target, maxResults)),
+      timedProvider("AutoScout24",()=>searchAutoScout(target, maxResults)),
+      timedProvider("Gocar",()=>searchGocar(target, maxResults))
     ]);
 
     const names=["2ememain","AutoScout24","Gocar"];
@@ -740,6 +755,7 @@ app.post("/api/comparables", async (req, res) => {
     const prices=comparables.map(item=>item.price).filter(Boolean);
     const medianValue=median(prices), averageValue=average(prices);
 
+    console.log(`[comparables] RESPONSE ${comparables.length} results`);
     return res.json({
       ok:true, version:VERSION, vehicle:target,
       provider:"multi-sites",
